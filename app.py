@@ -228,81 +228,91 @@ def detect_bull_flag(data, macd_line, signal_line, histogram):
     return confidence, pattern_info
 
 def detect_cup_handle(data, macd_line, signal_line, histogram):
-    """Detect cup handle with strict handle requirements"""
+    """Detect cup handle with more realistic requirements"""
     confidence = 0
     pattern_info = {}
     
     if len(data) < 40:
         return confidence, pattern_info
     
-    # Strict handle sizing
-    max_lookback = min(60, len(data) - 5)
-    handle_days = min(10, max_lookback // 6)  # Max 10 days
+    # STEP 1: More flexible sizing for 6-month data
+    max_lookback = min(80, len(data) - 5)  # Increased from 60 to 80
+    
+    # Handle can be longer - up to 20 days (was 10)
+    handle_days = min(20, max_lookback // 4)  # More realistic handle duration
     cup_days = max_lookback - handle_days
     
     cup_data = data.iloc[-max_lookback:-handle_days]
     handle_data = data.tail(handle_days)
     
-    if len(cup_data) < 20:
+    if len(cup_data) < 25:  # Reduced from 20, but still need decent cup
         return confidence, pattern_info
     
-    # Cup formation
+    # STEP 2: Cup formation
     cup_start = cup_data['Close'].iloc[0]
     cup_bottom = cup_data['Low'].min()
     cup_right = cup_data['Close'].iloc[-1]
     cup_depth = (max(cup_start, cup_right) - cup_bottom) / max(cup_start, cup_right)
     
-    if not (0.15 <= cup_depth <= 0.45 and cup_right >= cup_start * 0.90):
+    if not (0.12 <= cup_depth <= 0.50 and cup_right >= cup_start * 0.85):  # More lenient
         return confidence, pattern_info
     
     confidence += 30
     pattern_info['cup_depth'] = f"{cup_depth*100:.1f}%"
     
-    # Handle validation - VERY STRICT
+    # STEP 3: Handle validation - MORE REALISTIC
     handle_low = handle_data['Low'].min()
     current_price = data['Close'].iloc[-1]
     handle_depth = (cup_right - handle_low) / cup_right
     
-    # Handle too deep = pattern broken
-    if handle_depth > 0.12:
-        return 0, {'pattern_broken': True, 'break_reason': f'Handle too deep: {handle_depth*100:.1f}%'}
+    # More lenient handle depth - up to 18% (was 12%)
+    if handle_depth > 0.18:  # Increased from 0.12
+        return 0, {'pattern_broken': True, 'break_reason': f'Handle too deep: {handle_depth*100:.1f}% (>18%)'}
     
-    if handle_depth <= 0.08:
+    if handle_depth <= 0.08:  # Perfect handle
         confidence += 25
         pattern_info['perfect_handle'] = f"{handle_depth*100:.1f}%"
-    else:
-        confidence += 15
+    elif handle_depth <= 0.15:  # Good handle (expanded range)
+        confidence += 20
         pattern_info['good_handle'] = f"{handle_depth*100:.1f}%"
+    else:  # Acceptable handle (15-18%)
+        confidence += 15
+        pattern_info['acceptable_handle'] = f"{handle_depth*100:.1f}%"
     
-    # Handle duration
-    if handle_days > 8:
-        return confidence * 0.6, {**pattern_info, 'handle_too_long': f"{handle_days} days"}
+    # STEP 4: Handle duration - more lenient
+    if handle_days > 15:  # Increased from 8 to 15 days
+        return confidence * 0.7, {**pattern_info, 'handle_too_long': f"{handle_days} days"}
     
-    if handle_days <= 5:
+    if handle_days <= 8:  # Short handle bonus
         confidence += 10
         pattern_info['short_handle'] = f"{handle_days} days"
+    elif handle_days <= 12:  # Medium handle - still good
+        confidence += 5
+        pattern_info['medium_handle'] = f"{handle_days} days"
     
-    # Recency
-    days_since_low = next((i for i in range(1, handle_days + 3) if data['Low'].iloc[-i] == handle_low), handle_days + 3)
+    # STEP 5: Recency - more flexible
+    days_since_handle_low = next((i for i in range(1, handle_days + 5) 
+                                 if data['Low'].iloc[-i] == handle_low), handle_days + 5)
     
-    if days_since_low > handle_days + 2:
-        return confidence * 0.5, {**pattern_info, 'pattern_stale': True, 'handle_age': days_since_low}
+    if days_since_handle_low > handle_days + 3:  # More flexible
+        return confidence * 0.6, {**pattern_info, 'pattern_stale': True, 'handle_age': days_since_handle_low}
     
-    # Pattern validation
+    # STEP 6: Pattern validation - more lenient
     breakout_level = max(cup_start, cup_right)
-    if current_price < breakout_level * 0.90:
-        return confidence * 0.7, {**pattern_info, 'pattern_stale': True, 'far_from_rim': True}
+    if current_price < breakout_level * 0.85:  # Increased from 0.90
+        return confidence * 0.8, {**pattern_info, 'pattern_stale': True, 'far_from_rim': True}
     
-    if current_price < handle_low * 0.97:
+    # STEP 7: Pattern broken checks
+    if current_price < handle_low * 0.95:  # Below handle support
         return 0, {'pattern_broken': True, 'break_reason': 'Below handle support'}
     
-    # Technical confirmation
+    # STEP 8: Technical confirmation
     if macd_line.iloc[-1] > signal_line.iloc[-1]:
         confidence += 10
         pattern_info['macd_bullish'] = True
     
-    # Volume drying up
-    if len(cup_data) > 15:
+    # Volume drying up in handle
+    if len(cup_data) > 20:
         cup_volume = cup_data['Volume'].mean()
         handle_volume = handle_data['Volume'].mean()
         if handle_volume < cup_volume * 0.80:
@@ -684,8 +694,13 @@ def main():
                                     st.success(f"✨ Perfect handle: {info['perfect_handle']}")
                                 elif info.get('good_handle'):
                                     st.write(f"👍 Good handle: {info['good_handle']}")
+                                elif info.get('acceptable_handle'):
+                                    st.write(f"✅ Acceptable handle: {info['acceptable_handle']}")
+                                
                                 if info.get('short_handle'):
                                     st.write(f"⚡ Short handle: {info['short_handle']}")
+                                elif info.get('medium_handle'):
+                                    st.write(f"⏰ Medium handle: {info['medium_handle']}")
                                 
                                 # Flat Top with triangle height explanation
                                 if pattern == "Flat Top Breakout" and levels.get('measured_move'):
