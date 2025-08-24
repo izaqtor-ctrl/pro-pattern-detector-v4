@@ -64,7 +64,9 @@ def detect_flat_top(data, macd_line, signal_line, histogram):
         confidence += 10
         pattern_info['macd_bullish'] = True
     
-    return confidence, pattern_infoimport streamlit as st
+    return confidence, pattern_info
+
+import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
