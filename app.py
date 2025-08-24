@@ -5,6 +5,79 @@ def detect_flat_top(data, macd_line, signal_line, histogram):
     
     if len(data) < 50:
         return confidence, pattern_info
+
+def detect_bull_flag(data, macd_line, signal_line, histogram):
+    """Detect bull flag with recency validation"""
+    confidence = 0
+    pattern_info = {}
+    
+    if len(data) < 30:
+        return confidence, pattern_info
+    
+    # Recent flagpole
+    flagpole_start = min(25, len(data) - 10)
+    flagpole_end = 15
+    
+    start_price = data['Close'].iloc[-flagpole_start]
+    peak_price = data['High'].iloc[-flagpole_start:-flagpole_end].max()
+    flagpole_gain = (peak_price - start_price) / start_price
+    
+    if flagpole_gain < 0.08:
+        return confidence, pattern_info
+    
+    confidence += 25
+    pattern_info['flagpole_gain'] = f"{flagpole_gain*100:.1f}%"
+    
+    # Flag pullback
+    flag_data = data.tail(15)
+    flag_start = data['Close'].iloc[-flagpole_end]
+    current_price = data['Close'].iloc[-1]
+    
+    pullback = (current_price - flag_start) / flag_start
+    if -0.15 <= pullback <= 0.05:
+        confidence += 20
+        pattern_info['flag_pullback'] = f"{pullback*100:.1f}%"
+        pattern_info['healthy_pullback'] = True
+    
+    # Invalidation checks
+    flag_low = flag_data['Low'].min()
+    if current_price < flag_low * 0.95:
+        return 0, {'pattern_broken': True, 'break_reason': 'Below flag support'}
+    
+    if current_price < start_price:
+        return 0, {'pattern_broken': True, 'break_reason': 'Below flagpole start'}
+    
+    # Recency
+    flag_high = flag_data['High'].max()
+    days_old = next((i for i in range(1, 11) if data['High'].iloc[-i] == flag_high), 11)
+    
+    if days_old > 10:
+        return confidence * 0.5, {**pattern_info, 'pattern_stale': True, 'days_old': days_old}
+    
+    pattern_info['days_since_high'] = days_old
+    
+    # Technical confirmation
+    if macd_line.iloc[-1] > signal_line.iloc[-1]:
+        confidence += 15
+        pattern_info['macd_bullish'] = True
+    
+    if histogram.iloc[-1] > histogram.iloc[-3]:
+        confidence += 10
+        pattern_info['momentum_recovering'] = True
+    
+    # Volume pattern
+    flagpole_vol = data['Volume'].iloc[-flagpole_start:-flagpole_end].mean()
+    flag_vol = flag_data['Volume'].mean()
+    if flagpole_vol > flag_vol * 1.2:
+        confidence += 15
+        pattern_info['volume_pattern'] = True
+    
+    # Near breakout
+    if current_price >= flag_high * 0.95:
+        confidence += 10
+        pattern_info['near_breakout'] = True
+    
+    return confidence, pattern_info
     
     # STEP 1: Initial ascension (10%+ rise)
     ascent_start = min(45, len(data) - 15)
@@ -640,6 +713,41 @@ def calculate_levels(data, pattern_info, pattern_type):
             target2 = entry + (risk * 3.5)
         
         target_method = "Triangle Height Projection"
+        
+    elif pattern_type == "Ascending Triangle":
+        # Entry at resistance breakout
+        entry = pattern_info.get('resistance_level', current_price * 1.01)
+        
+        # Stop below recent ascending support
+        recent_support_lows = data['Low'].tail(15).rolling(3, center=True).min().dropna()
+        if len(recent_support_lows) > 0:
+            support_level = recent_support_lows.iloc[-1]  # Latest support level
+        else:
+            support_level = data['Low'].tail(15).min()
+        
+        volatility_stop = entry - volatility_stop_distance
+        traditional_stop = support_level * 0.98
+        
+        # Use the higher stop (better R/R)
+        stop = max(volatility_stop, traditional_stop)
+        
+        # Ensure proper stop distance
+        min_stop_distance = entry * 0.04  # At least 4% for triangles
+        if stop >= entry:
+            stop = entry - min_stop_distance
+        elif (entry - stop) < min_stop_distance:
+            stop = entry - min_stop_distance
+        
+        # MEASURED MOVE: Triangle height projection
+        triangle_height = entry - support_level
+        
+        # Ensure minimum triangle height
+        triangle_height = max(triangle_height, entry * 0.06)  # At least 6%
+        
+        target1 = entry + triangle_height  # 1:1 measured move
+        target2 = entry + (triangle_height * 1.618)  # Golden ratio extension
+        
+        target_method = "Ascending Triangle Height Projection"
         
     elif pattern_type == "Bull Flag":
         # Entry at flag breakout
