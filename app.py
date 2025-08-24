@@ -347,42 +347,119 @@ def detect_pattern(data, pattern_type):
     return confidence >= 55, confidence, pattern_info
 
 def calculate_levels(data, pattern_info, pattern_type):
-    """Calculate entry, stop, targets"""
+    """Calculate entry, stop, targets using MEASURED MOVES (Professional Method)"""
     current_price = data['Close'].iloc[-1]
     
     if pattern_type == "Flat Top Breakout":
+        # Entry at resistance breakout
         entry = pattern_info.get('resistance_level', current_price * 1.01)
+        
+        # Stop below recent swing low
         stop = data['Low'].tail(10).min() * 0.98
+        
+        # MEASURED MOVE: Triangle height added to breakout
+        if 'resistance_level' in pattern_info:
+            triangle_height = entry - stop  # Height of triangle
+            target1 = entry + triangle_height  # 1:1 measured move
+            target2 = entry + (triangle_height * 1.618)  # Fibonacci extension
+        else:
+            # Fallback to traditional method
+            target1 = entry + (entry - stop) * 2.0
+            target2 = entry + (entry - stop) * 3.0
+        
+        target_method = "Triangle Height Projection"
+        
     elif pattern_type == "Bull Flag":
+        # Entry at flag breakout
         entry = data['High'].tail(15).max() * 1.005
+        
+        # Stop below flag low
         stop = data['Low'].tail(10).min() * 0.98
-    else:  # Cup Handle
-        entry = current_price * 1.01
+        
+        # MEASURED MOVE: Flagpole height added to breakout
+        if 'flagpole_gain' in pattern_info:
+            # Extract flagpole percentage and convert to dollar amount
+            flagpole_pct = float(pattern_info['flagpole_gain'].replace('%', '')) / 100
+            flagpole_height = entry * flagpole_pct  # Dollar height of flagpole
+            
+            target1 = entry + flagpole_height  # Full flagpole projection
+            target2 = entry + (flagpole_height * 1.382)  # 138.2% Fibonacci extension
+        else:
+            # Fallback
+            target1 = entry + (entry - stop) * 2.0
+            target2 = entry + (entry - stop) * 3.0
+        
+        target_method = "Flagpole Height Projection"
+        
+    elif pattern_type == "Cup Handle":
+        # Entry at cup rim breakout
+        breakout_level = current_price * 1.01
+        if 'cup_depth' in pattern_info:
+            # Try to estimate cup rim level from pattern info
+            cup_depth_pct = float(pattern_info['cup_depth'].replace('%', '')) / 100
+            estimated_rim = current_price / (1 - cup_depth_pct * 0.5)  # Rough estimate
+            entry = estimated_rim * 1.005
+        else:
+            entry = breakout_level
+        
+        # Stop below handle low
         stop = data.tail(10)['Low'].min() * 0.97
+        
+        # MEASURED MOVE: Cup depth added to rim breakout
+        if 'cup_depth' in pattern_info:
+            cup_depth_pct = float(pattern_info['cup_depth'].replace('%', '')) / 100
+            cup_depth_dollars = entry * cup_depth_pct  # Dollar depth of cup
+            
+            target1 = entry + cup_depth_dollars  # Full cup depth projection
+            target2 = entry + (cup_depth_dollars * 1.618)  # Golden ratio extension
+        else:
+            # Fallback
+            target1 = entry + (entry - stop) * 2.0
+            target2 = entry + (entry - stop) * 3.0
+        
+        target_method = "Cup Depth Projection"
     
-    target1 = entry + (entry - stop) * 2.0
-    target2 = entry + (entry - stop) * 3.0
+    else:
+        # Fallback for any other patterns
+        entry = current_price * 1.01
+        stop = data['Low'].tail(10).min() * 0.98
+        target1 = entry + (entry - stop) * 2.0
+        target2 = entry + (entry - stop) * 3.0
+        target_method = "Traditional 2:1 & 3:1"
+    
+    # Calculate metrics
+    risk_amount = entry - stop
+    reward1 = target1 - entry
+    reward2 = target2 - entry
     
     return {
         'entry': entry,
         'stop': stop,
         'target1': target1,
         'target2': target2,
-        'risk': entry - stop,
-        'reward1': target1 - entry,
-        'rr_ratio': (target1 - entry) / (entry - stop) if entry > stop else 0
+        'risk': risk_amount,
+        'reward1': reward1,
+        'reward2': reward2,
+        'rr_ratio1': reward1 / risk_amount if risk_amount > 0 else 0,
+        'rr_ratio2': reward2 / risk_amount if risk_amount > 0 else 0,
+        'target_method': target_method,  # NEW: Show calculation method
+        'measured_move': True  # Flag to indicate this uses measured moves
     }
 
 def create_chart(data, ticker, pattern_type, pattern_info, levels):
-    """Create enhanced chart"""
+    """Create enhanced chart with measured move annotations"""
     fig = make_subplots(
         rows=3, cols=1,
-        subplot_titles=(f'{ticker} - {pattern_type}', 'MACD', 'Volume'),
+        subplot_titles=(
+            f'{ticker} - {pattern_type} | {levels["target_method"]}',
+            'MACD Analysis', 
+            'Volume Profile'
+        ),
         vertical_spacing=0.05,
         row_heights=[0.6, 0.25, 0.15]
     )
     
-    # Candlestick
+    # Candlestick chart
     fig.add_trace(
         go.Candlestick(
             x=data.index,
@@ -403,15 +480,45 @@ def create_chart(data, ticker, pattern_type, pattern_info, levels):
         row=1, col=1
     )
     
-    # Levels
-    fig.add_hline(y=levels['entry'], line_color="green", 
-                 annotation_text=f"Entry: ${levels['entry']:.2f}", row=1, col=1)
-    fig.add_hline(y=levels['stop'], line_color="red", 
-                 annotation_text=f"Stop: ${levels['stop']:.2f}", row=1, col=1)
-    fig.add_hline(y=levels['target1'], line_color="lime", 
-                 annotation_text=f"Target: ${levels['target1']:.2f}", row=1, col=1)
+    # Trading levels with enhanced annotations
+    fig.add_hline(y=levels['entry'], line_color="green", line_width=2,
+                 annotation_text=f"📈 Entry: ${levels['entry']:.2f}", row=1, col=1)
+    fig.add_hline(y=levels['stop'], line_color="red", line_width=2,
+                 annotation_text=f"🛑 Stop: ${levels['stop']:.2f}", row=1, col=1)
+    fig.add_hline(y=levels['target1'], line_color="lime", line_width=2,
+                 annotation_text=f"🎯 Target 1: ${levels['target1']:.2f} ({levels['rr_ratio1']:.1f}:1)", row=1, col=1)
+    fig.add_hline(y=levels['target2'], line_color="darkgreen", line_width=1,
+                 annotation_text=f"🎯 Target 2: ${levels['target2']:.2f} ({levels['rr_ratio2']:.1f}:1)", row=1, col=1)
     
-    # MACD
+    # Add pattern-specific annotations
+    if pattern_type == "Bull Flag" and 'flagpole_gain' in pattern_info:
+        flagpole_height = levels['reward1']  # This is the measured move
+        fig.add_annotation(
+            x=data.index[-5], y=levels['target1'],
+            text=f"Measured Move: ${flagpole_height:.2f}",
+            showarrow=True, arrowhead=2, arrowcolor="lime",
+            bgcolor="rgba(0,255,0,0.1)", bordercolor="lime"
+        )
+    
+    elif pattern_type == "Cup Handle" and 'cup_depth' in pattern_info:
+        cup_move = levels['reward1']
+        fig.add_annotation(
+            x=data.index[-5], y=levels['target1'],
+            text=f"Cup Depth Move: ${cup_move:.2f}",
+            showarrow=True, arrowhead=2, arrowcolor="lime",
+            bgcolor="rgba(0,255,0,0.1)", bordercolor="lime"
+        )
+    
+    elif pattern_type == "Flat Top Breakout":
+        triangle_height = levels['reward1']
+        fig.add_annotation(
+            x=data.index[-5], y=levels['target1'],
+            text=f"Triangle Height: ${triangle_height:.2f}",
+            showarrow=True, arrowhead=2, arrowcolor="lime",
+            bgcolor="rgba(0,255,0,0.1)", bordercolor="lime"
+        )
+    
+    # MACD chart
     macd_line = pattern_info['macd_line']
     signal_line = pattern_info['signal_line']
     histogram = pattern_info['histogram']
@@ -420,22 +527,22 @@ def create_chart(data, ticker, pattern_type, pattern_info, levels):
     fig.add_trace(go.Scatter(x=data.index, y=signal_line, name='Signal', line=dict(color='red')), row=2, col=1)
     
     colors = ['green' if h >= 0 else 'red' for h in histogram]
-    fig.add_trace(go.Bar(x=data.index, y=histogram, name='Histogram', marker_color=colors), row=2, col=1)
+    fig.add_trace(go.Bar(x=data.index, y=histogram, name='Histogram', marker_color=colors, opacity=0.6), row=2, col=1)
     fig.add_hline(y=0, line_color="black", row=2, col=1)
     
-    # Volume
+    # Volume chart
     fig.add_trace(go.Bar(x=data.index, y=data['Volume'], name='Volume', marker_color='blue', opacity=0.6), row=3, col=1)
     
     fig.update_layout(height=800, showlegend=True, xaxis_rangeslider_visible=False)
-    fig.update_yaxes(title_text="Price", row=1, col=1)
+    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
     fig.update_yaxes(title_text="MACD", row=2, col=1)
     fig.update_yaxes(title_text="Volume", row=3, col=1)
     
     return fig
 
 def main():
-    st.title("🎯 Pro Pattern Detector v3.0")
-    st.markdown("**Enhanced Pattern Recognition with MACD & Volume**")
+    st.title("🎯 Pro Pattern Detector v4.0")
+    st.markdown("**Measured Move Targets** - Professional Pattern Recognition with Geometric Projections")
     
     if not YFINANCE_AVAILABLE:
         st.warning("⚠️ **Demo Mode**: Using simulated data (yfinance not available)")
@@ -444,6 +551,30 @@ def main():
     🚨 **DISCLAIMER**: Educational purposes only. Not financial advice. 
     Trading involves substantial risk. Consult professionals before trading.
     """)
+    
+    # Info box about new features
+    with st.expander("🆕 What's New in v4.0"):
+        st.markdown("""
+        ### 🎯 **Professional Measured Move Targets**
+        
+        Instead of fixed 2:1 and 3:1 ratios, v4.0 uses **geometric projections**:
+        
+        **🚀 Bull Flag**: Target = Entry + Flagpole Height
+        - *If flagpole is $10, target is $10 above breakout*
+        
+        **☕ Cup-Handle**: Target = Cup Rim + Cup Depth  
+        - *If cup is 20% deep, target is 20% above rim*
+        
+        **📐 Flat Top**: Target = Breakout + Triangle Height
+        - *Projects the triangle's height above resistance*
+        
+        ### 📊 **Enhanced Display**
+        - Shows **calculation method** for each pattern
+        - **Dual targets** with Fibonacci extensions  
+        - **Visual annotations** on charts showing measured moves
+        
+        **This is how professional traders set their targets!** 🎖️
+        """)
     
     # Sidebar
     st.sidebar.header("Configuration")
@@ -501,13 +632,24 @@ def main():
                                     st.info(f"🟡 {pattern} DETECTED")
                                     
                                 st.metric("Confidence", f"{confidence:.0f}%")
+                                
+                                # Enhanced display with measured moves
+                                st.write("**📊 Trading Levels:**")
                                 st.write(f"**Entry**: ${levels['entry']:.2f}")
                                 st.write(f"**Stop**: ${levels['stop']:.2f}")
-                                st.write(f"**Target**: ${levels['target1']:.2f}")
-                                st.write(f"**R/R**: {levels['rr_ratio']:.1f}:1")
+                                st.write(f"**Target 1**: ${levels['target1']:.2f}")
+                                st.write(f"**Target 2**: ${levels['target2']:.2f}")
+                                
+                                # NEW: Show R/R ratios for both targets
+                                st.write("**🎯 Risk/Reward:**")
+                                st.write(f"**T1 R/R**: {levels['rr_ratio1']:.1f}:1")
+                                st.write(f"**T2 R/R**: {levels['rr_ratio2']:.1f}:1")
+                                
+                                # NEW: Show calculation method
+                                st.info(f"📐 **Method**: {levels['target_method']}")
                             
                             with col2:
-                                # Flat Top info
+                                # Enhanced pattern-specific information
                                 if info.get('initial_ascension'):
                                     st.write(f"🚀 Initial rise: {info['initial_ascension']}")
                                 if info.get('descending_highs'):
@@ -517,27 +659,44 @@ def main():
                                 if info.get('resistance_touches'):
                                     st.write(f"🔴 Resistance: {info['resistance_touches']} touches")
                                 
-                                # Bull Flag info
+                                # Bull Flag with measured move explanation
                                 if info.get('flagpole_gain'):
-                                    st.write(f"🚀 Flagpole: {info['flagpole_gain']}")
+                                    flagpole_pct = info['flagpole_gain']
+                                    flagpole_dollars = levels['reward1']
+                                    st.write(f"🚀 Flagpole: {flagpole_pct}")
+                                    st.success(f"📐 **Measured Move**: ${flagpole_dollars:.2f}")
+                                    st.write("*Target = Entry + Flagpole Height*")
+                                
                                 if info.get('healthy_pullback'):
                                     st.write(f"📉 Flag pullback: {info.get('flag_pullback', '')}")
                                 if info.get('days_since_high'):
                                     st.write(f"⏰ Flag age: {info['days_since_high']} days")
                                 
-                                # Cup Handle info
+                                # Cup Handle with measured move explanation
                                 if info.get('cup_depth'):
-                                    st.write(f"☕ Cup depth: {info['cup_depth']}")
+                                    cup_pct = info['cup_depth']
+                                    cup_dollars = levels['reward1']
+                                    st.write(f"☕ Cup depth: {cup_pct}")
+                                    st.success(f"📐 **Measured Move**: ${cup_dollars:.2f}")
+                                    st.write("*Target = Rim + Cup Depth*")
+                                
                                 if info.get('perfect_handle'):
                                     st.success(f"✨ Perfect handle: {info['perfect_handle']}")
                                 elif info.get('good_handle'):
                                     st.write(f"👍 Good handle: {info['good_handle']}")
                                 if info.get('short_handle'):
                                     st.write(f"⚡ Short handle: {info['short_handle']}")
+                                
+                                # Flat Top with triangle height explanation
+                                if pattern == "Flat Top Breakout" and levels.get('measured_move'):
+                                    triangle_height = levels['reward1']
+                                    st.success(f"📐 **Triangle Height**: ${triangle_height:.2f}")
+                                    st.write("*Target = Breakout + Triangle Height*")
+                                
+                                # Warnings and status
                                 if info.get('handle_too_long'):
                                     st.warning(f"⚠️ Handle aging: {info['handle_too_long']}")
                                 
-                                # Warnings
                                 if info.get('pattern_stale'):
                                     if info.get('days_old'):
                                         st.warning(f"⚠️ Pattern aging: {info['days_old']} days")
@@ -565,16 +724,19 @@ def main():
                             fig = create_chart(data, ticker, pattern, info, levels)
                             st.plotly_chart(fig, use_container_width=True)
                             
-                            # Add to results
+                            # Add to results with enhanced information
                             results.append({
                                 'Ticker': ticker,
                                 'Pattern': pattern,
                                 'Confidence': f"{confidence:.0f}%",
                                 'Entry': f"${levels['entry']:.2f}",
                                 'Stop': f"${levels['stop']:.2f}",
-                                'Target': f"${levels['target1']:.2f}",
-                                'R_R_Ratio': f"{levels['rr_ratio']:.1f}:1",
-                                'Risk': f"${levels['risk']:.2f}"
+                                'Target 1': f"${levels['target1']:.2f}",
+                                'Target 2': f"${levels['target2']:.2f}",
+                                'R/R 1': f"{levels['rr_ratio1']:.1f}:1",
+                                'R/R 2': f"{levels['rr_ratio2']:.1f}:1",
+                                'Risk': f"${levels['risk']:.2f}",
+                                'Method': levels['target_method']
                             })
                         else:
                             st.info(f"❌ {pattern}: {confidence:.0f}% (below threshold)")
@@ -595,9 +757,10 @@ def main():
                     avg_score = sum(scores) / len(scores) if scores else 0
                     st.metric("Avg Confidence", f"{avg_score:.0f}%")
                 with col3:
-                    ratios = [float(r['R_R_Ratio'].split(':')[0]) for r in results]
-                    avg_rr = sum(ratios) / len(ratios) if ratios else 0
-                    st.metric("Avg R/R", f"{avg_rr:.1f}:1")
+                    if results:
+                        ratios = [float(r['R/R 1'].split(':')[0]) for r in results]
+                        avg_rr = sum(ratios) / len(ratios) if ratios else 0
+                        st.metric("Avg R/R T1", f"{avg_rr:.1f}:1")
                 
                 # Download
                 csv = df.to_csv(index=False)
