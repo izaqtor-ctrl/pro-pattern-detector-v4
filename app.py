@@ -1,4 +1,70 @@
-import streamlit as st
+def detect_flat_top(data, macd_line, signal_line, histogram):
+    """Detect flat top: ASCENSION → DESCENSION → HIGHER LOWS"""
+    confidence = 0
+    pattern_info = {}
+    
+    if len(data) < 50:
+        return confidence, pattern_info
+    
+    # STEP 1: Initial ascension (10%+ rise)
+    ascent_start = min(45, len(data) - 15)
+    ascent_end = 25
+    
+    start_price = data['Close'].iloc[-ascent_start]
+    peak_price = data['High'].iloc[-ascent_start:-ascent_end].max()
+    initial_gain = (peak_price - start_price) / start_price
+    
+    if initial_gain < 0.10:
+        return confidence, pattern_info
+    
+    confidence += 25
+    pattern_info['initial_ascension'] = f"{initial_gain*100:.1f}%"
+    
+    # STEP 2: Descension with lower highs
+    descent_data = data.iloc[-ascent_end:-10]
+    descent_low = descent_data['Low'].min()
+    pullback = (peak_price - descent_low) / peak_price
+    
+    if pullback < 0.08:
+        return confidence, pattern_info
+    
+    descent_highs = descent_data['High'].rolling(3, center=True).max().dropna()
+    if len(descent_highs) >= 2:
+        if descent_highs.iloc[-1] < descent_highs.iloc[0] * 0.97:
+            confidence += 20
+            pattern_info['descending_highs'] = True
+    
+    # STEP 3: Current higher lows
+    current_lows = data.tail(15)['Low'].rolling(3, center=True).min().dropna()
+    if len(current_lows) >= 3:
+        if current_lows.iloc[-1] > current_lows.iloc[0] * 1.01:
+            confidence += 25
+            pattern_info['higher_lows'] = True
+    
+    # STEP 4: Flat resistance
+    resistance_level = peak_price
+    touches = sum(1 for h in data['High'].tail(20) if h >= resistance_level * 0.98)
+    if touches >= 2:
+        confidence += 15
+        pattern_info['resistance_level'] = resistance_level
+        pattern_info['resistance_touches'] = touches
+    
+    # STEP 5: Recency check
+    current_price = data['Close'].iloc[-1]
+    days_old = next((i for i in range(1, 11) if data['High'].iloc[-i] >= resistance_level * 0.98), 11)
+    
+    if days_old > 8:
+        return confidence * 0.5, {**pattern_info, 'pattern_stale': True, 'days_old': days_old}
+    
+    if current_price < descent_low * 0.95:
+        return 0, {'pattern_broken': True, 'break_reason': 'Below support'}
+    
+    # Technical confirmation
+    if macd_line.iloc[-1] > signal_line.iloc[-1]:
+        confidence += 10
+        pattern_info['macd_bullish'] = True
+    
+    return confidence, pattern_infoimport streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -86,7 +152,124 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
     histogram = macd_line - signal_line
     return macd_line, signal_line, histogram
 
-def detect_flat_top(data, macd_line, signal_line, histogram):
+def detect_ascending_triangle(data, macd_line, signal_line, histogram):
+    """Detect ascending triangle: Higher lows + Flat resistance (continuation pattern)"""
+    confidence = 0
+    pattern_info = {}
+    
+    if len(data) < 30:
+        return confidence, pattern_info
+    
+    # STEP 1: Identify flat resistance level (similar to flat top)
+    # Look for recent highs that form flat resistance
+    recent_period = min(40, len(data))
+    resistance_data = data.tail(recent_period)
+    
+    # Find the high point that's being tested multiple times
+    resistance_high = resistance_data['High'].max()
+    
+    # Look for multiple touches of this level (within 2%)
+    resistance_touches = sum(1 for h in resistance_data['High'].tail(20) if h >= resistance_high * 0.98)
+    
+    if resistance_touches < 2:  # Need at least 2 touches
+        return confidence, pattern_info
+    
+    confidence += 25
+    pattern_info['resistance_level'] = resistance_high
+    pattern_info['resistance_touches'] = resistance_touches
+    
+    # STEP 2: Critical - Higher lows pattern (ascending support)
+    # This is what makes it ascending triangle vs flat top
+    support_data = data.tail(25)  # Last 25 days for support analysis
+    support_lows = support_data['Low'].rolling(3, center=True).min().dropna()
+    
+    if len(support_lows) < 4:
+        return confidence, pattern_info
+    
+    # Check for clear ascending pattern in lows
+    first_low = support_lows.iloc[0]
+    last_low = support_lows.iloc[-1]
+    middle_low = support_lows.iloc[len(support_lows)//2]
+    
+    # Strong higher lows pattern
+    if last_low > first_low * 1.02 and middle_low > first_low * 1.01:
+        confidence += 30
+        pattern_info['strong_higher_lows'] = True
+        pattern_info['support_trend'] = 'strongly ascending'
+    elif last_low > first_low * 1.005:  # Moderate higher lows
+        confidence += 20
+        pattern_info['moderate_higher_lows'] = True
+        pattern_info['support_trend'] = 'ascending'
+    else:
+        # Not really ascending - reduce confidence
+        return confidence * 0.5, pattern_info
+    
+    # STEP 3: Triangle compression (narrowing range)
+    early_range = (resistance_data['High'].iloc[:10] - resistance_data['Low'].iloc[:10]).mean()
+    recent_range = (resistance_data['High'].tail(10) - resistance_data['Low'].tail(10)).mean()
+    
+    if recent_range < early_range * 0.8:  # Range is compressing
+        confidence += 15
+        pattern_info['compression'] = True
+        pattern_info['range_compression'] = f"{(1 - recent_range/early_range)*100:.1f}%"
+    
+    # STEP 4: Duration validation (good triangles take time)
+    triangle_duration = len(resistance_data)
+    if triangle_duration >= 15:  # At least 15 days
+        confidence += 10
+        pattern_info['sufficient_duration'] = f"{triangle_duration} days"
+    
+    # STEP 5: Breakout proximity (should be near resistance)
+    current_price = data['Close'].iloc[-1]
+    distance_to_resistance = (resistance_high - current_price) / current_price
+    
+    if distance_to_resistance <= 0.03:  # Within 3% of resistance
+        confidence += 15
+        pattern_info['near_breakout'] = True
+        pattern_info['breakout_proximity'] = f"{distance_to_resistance*100:.1f}%"
+    elif distance_to_resistance <= 0.05:  # Within 5%
+        confidence += 10
+        pattern_info['approaching_breakout'] = True
+    
+    # STEP 6: Pattern recency validation
+    days_since_resistance_touch = next(
+        (i for i in range(1, 11) if data['High'].iloc[-i] >= resistance_high * 0.98), 11
+    )
+    
+    if days_since_resistance_touch > 8:  # Too stale
+        confidence *= 0.7
+        pattern_info['pattern_stale'] = True
+        pattern_info['days_old'] = days_since_resistance_touch
+    
+    # STEP 7: Support break invalidation
+    recent_support = support_lows.iloc[-3:].min()
+    if current_price < recent_support * 0.97:
+        return 0, {'pattern_broken': True, 'break_reason': 'Below ascending support'}
+    
+    # STEP 8: MACD confirmation (momentum building)
+    if macd_line.iloc[-1] > signal_line.iloc[-1]:
+        confidence += 10
+        pattern_info['macd_bullish'] = True
+    
+    if histogram.iloc[-1] > histogram.iloc[-2]:
+        confidence += 10
+        pattern_info['momentum_building'] = True
+    
+    # STEP 9: Volume analysis (should be decreasing then surge on breakout)
+    if len(data) > 20:
+        early_volume = data['Volume'].iloc[-25:-15].mean() if len(data) >= 25 else data['Volume'].iloc[:-10].mean()
+        recent_volume = data['Volume'].tail(10).mean()
+        
+        if recent_volume < early_volume * 0.85:  # Volume drying up
+            confidence += 10
+            pattern_info['volume_compression'] = True
+        
+        # Check for recent volume surge (potential breakout)
+        if data['Volume'].tail(3).mean() > recent_volume * 1.3:
+            confidence += 8
+            pattern_info['volume_surge'] = True
+    
+    return confidence, pattern_info
     """Detect flat top: ASCENSION → DESCENSION → HIGHER LOWS"""
     confidence = 0
     pattern_info = {}
@@ -357,7 +540,44 @@ def detect_pattern(data, pattern_type):
         confidence, pattern_info = detect_flat_top(data, macd_line, signal_line, histogram)
         confidence = min(confidence, 100)
         
-    elif pattern_type == "Bull Flag":
+    elif pattern_type == "Ascending Triangle":
+        confidence, pattern_info = detect_ascending_triangle(data, macd_line, signal_line, histogram)
+        confidence = min(confidence * 1.05, 100)  # Small boost for competitiveness
+        
+    elif pattern_type == "Ascending Triangle":
+        # Entry at resistance breakout
+        entry = pattern_info.get('resistance_level', current_price * 1.01)
+        
+        # Stop below recent ascending support
+        recent_support_lows = data['Low'].tail(15).rolling(3, center=True).min().dropna()
+        if len(recent_support_lows) > 0:
+            support_level = recent_support_lows.iloc[-1]  # Latest support level
+        else:
+            support_level = data['Low'].tail(15).min()
+        
+        volatility_stop = entry - volatility_stop_distance
+        traditional_stop = support_level * 0.98
+        
+        # Use the higher stop (better R/R)
+        stop = max(volatility_stop, traditional_stop)
+        
+        # Ensure proper stop distance
+        min_stop_distance = entry * 0.04  # At least 4% for triangles
+        if stop >= entry:
+            stop = entry - min_stop_distance
+        elif (entry - stop) < min_stop_distance:
+            stop = entry - min_stop_distance
+        
+        # MEASURED MOVE: Triangle height projection
+        triangle_height = entry - support_level
+        
+        # Ensure minimum triangle height
+        triangle_height = max(triangle_height, entry * 0.06)  # At least 6%
+        
+        target1 = entry + triangle_height  # 1:1 measured move
+        target2 = entry + (triangle_height * 1.618)  # Golden ratio extension
+        
+        target_method = "Ascending Triangle Height Projection"
         confidence, pattern_info = detect_bull_flag(data, macd_line, signal_line, histogram)
         confidence = min(confidence * 1.05, 100)
         
@@ -704,20 +924,26 @@ def main():
         **📐 Flat Top**: Target = Breakout + Triangle Height
         - *Projects the triangle's height above resistance*
         
-        ### 📊 **Enhanced Display**
-        - Shows **calculation method** for each pattern
-        - **Dual targets** with Fibonacci extensions  
-        - **Visual annotations** on charts showing measured moves
+        **🔺 Ascending Triangle**: Target = Breakout + Triangle Height *(NEW!)*
+        - *Continuation pattern with flat resistance + higher lows*
+        
+        ### 📊 **Enhanced Features**
+        - **Volatility-adjusted stops** for better R/R ratios
+        - **Guaranteed minimum 1.5:1** risk/reward ratios  
+        - **Dual targets** with Fibonacci extensions
+        - **Pattern invalidation** detection
+        - **4 professional patterns** with measured moves
         
         **This is how professional traders set their targets!** 🎖️
         """)
     
+    
     # Sidebar
     st.sidebar.header("Configuration")
     
-    patterns = ["Flat Top Breakout", "Bull Flag", "Cup Handle"]
+    patterns = ["Flat Top Breakout", "Ascending Triangle", "Bull Flag", "Cup Handle"]
     selected_patterns = st.sidebar.multiselect(
-        "Select Patterns:", patterns, default=["Flat Top Breakout", "Bull Flag"]
+        "Select Patterns:", patterns, default=["Flat Top Breakout", "Ascending Triangle", "Bull Flag"]
     )
     
     tickers = st.sidebar.text_input("Tickers:", "AAPL,MSFT,NVDA")
@@ -794,6 +1020,36 @@ def main():
                                     st.write("📈 Higher lows (triangle)")
                                 if info.get('resistance_touches'):
                                     st.write(f"🔴 Resistance: {info['resistance_touches']} touches")
+                                
+                                # Ascending Triangle specific info
+                                if info.get('strong_higher_lows'):
+                                    st.success("📈 Strong ascending support")
+                                elif info.get('moderate_higher_lows'):
+                                    st.write("📈 Moderate ascending support")
+                                if info.get('compression'):
+                                    compression_pct = info.get('range_compression', '')
+                                    st.write(f"🔥 Compression: {compression_pct}")
+                                if info.get('sufficient_duration'):
+                                    st.write(f"⏰ Duration: {info['sufficient_duration']}")
+                                if info.get('volume_compression'):
+                                    st.write("💧 Volume drying up")
+                                if info.get('volume_surge'):
+                                    st.write("🔥 Volume surge detected")
+                                if info.get('near_breakout'):
+                                    proximity = info.get('breakout_proximity', '')
+                                    st.write(f"🎯 Near breakout: {proximity}")
+                                elif info.get('approaching_breakout'):
+                                    st.write("🎯 Approaching breakout")
+                                
+                                # Show measured move for Ascending Triangle
+                                if pattern == "Ascending Triangle" and levels.get('measured_move'):
+                                    triangle_height = levels['reward1']
+                                    st.success(f"📐 **Triangle Height**: ${triangle_height:.2f}")
+                                    st.write("*Target = Breakout + Triangle Height*")
+                                    
+                                    # R/R validation warning
+                                    if levels['rr_ratio1'] < 1.5:
+                                        st.warning(f"⚠️ Low R/R: {levels['rr_ratio1']:.1f}:1 (adjusted to 1.5:1)")
                                 
                                 # Bull Flag with measured move explanation
                                 if info.get('flagpole_gain'):
