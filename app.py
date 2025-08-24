@@ -373,90 +373,199 @@ def detect_pattern(data, pattern_type):
     return confidence >= 55, confidence, pattern_info
 
 def calculate_levels(data, pattern_info, pattern_type):
-    """Calculate entry, stop, targets using MEASURED MOVES (Professional Method)"""
+    """Calculate entry, stop, targets using MEASURED MOVES with improved R/R ratios"""
     current_price = data['Close'].iloc[-1]
+    
+    # Calculate a reasonable stop distance based on recent volatility
+    recent_range = data['High'].tail(20) - data['Low'].tail(20)
+    avg_range = recent_range.mean()
+    volatility_stop_distance = avg_range * 1.5  # 1.5x average daily range
     
     if pattern_type == "Flat Top Breakout":
         # Entry at resistance breakout
         entry = pattern_info.get('resistance_level', current_price * 1.01)
         
-        # Stop below recent swing low
-        stop = data['Low'].tail(10).min() * 0.98
+        # Improved stop calculation
+        recent_low = data['Low'].tail(15).min()
+        volatility_stop = entry - volatility_stop_distance
+        traditional_stop = recent_low * 0.98
         
-        # MEASURED MOVE: Triangle height added to breakout
+        # Use the higher of the two (closer stop for better R/R)
+        stop = max(volatility_stop, traditional_stop)
+        
+        # Ensure stop is below entry with minimum distance
+        min_stop_distance = entry * 0.03  # At least 3% below entry
+        if stop >= entry:
+            stop = entry - min_stop_distance
+        elif (entry - stop) < min_stop_distance:
+            stop = entry - min_stop_distance
+        
+        # MEASURED MOVE: Triangle height projection
         if 'resistance_level' in pattern_info:
-            triangle_height = entry - stop  # Height of triangle
+            # Calculate triangle height more accurately
+            support_level = data['Low'].tail(20).max()  # Recent support
+            triangle_height = entry - support_level
+            
+            # Ensure minimum triangle height
+            triangle_height = max(triangle_height, entry * 0.05)  # At least 5%
+            
             target1 = entry + triangle_height  # 1:1 measured move
-            target2 = entry + (triangle_height * 1.618)  # Fibonacci extension
+            target2 = entry + (triangle_height * 1.618)  # Golden ratio extension
         else:
-            # Fallback to traditional method
-            target1 = entry + (entry - stop) * 2.0
-            target2 = entry + (entry - stop) * 3.0
+            # Fallback with guaranteed good R/R
+            risk = entry - stop
+            target1 = entry + (risk * 2.0)
+            target2 = entry + (risk * 3.5)
         
         target_method = "Triangle Height Projection"
         
     elif pattern_type == "Bull Flag":
         # Entry at flag breakout
-        entry = data['High'].tail(15).max() * 1.005
+        flag_high = data['High'].tail(15).max()
+        entry = flag_high * 1.005
         
-        # Stop below flag low
-        stop = data['Low'].tail(10).min() * 0.98
+        # Improved stop for bull flags
+        flag_low = data['Low'].tail(12).min()  # Recent flag support
+        volatility_stop = entry - volatility_stop_distance
+        traditional_stop = flag_low * 0.98
         
-        # MEASURED MOVE: Flagpole height added to breakout
+        # Use the higher stop (better R/R)
+        stop = max(volatility_stop, traditional_stop)
+        
+        # Ensure proper stop distance
+        min_stop_distance = entry * 0.04  # At least 4% for bull flags
+        if stop >= entry:
+            stop = entry - min_stop_distance
+        elif (entry - stop) < min_stop_distance:
+            stop = entry - min_stop_distance
+        
+        # MEASURED MOVE: Enhanced flagpole calculation
         if 'flagpole_gain' in pattern_info:
-            # Extract flagpole percentage and convert to dollar amount
-            flagpole_pct = float(pattern_info['flagpole_gain'].replace('%', '')) / 100
-            flagpole_height = entry * flagpole_pct  # Dollar height of flagpole
-            
-            target1 = entry + flagpole_height  # Full flagpole projection
-            target2 = entry + (flagpole_height * 1.382)  # 138.2% Fibonacci extension
+            try:
+                # Extract flagpole percentage more reliably
+                flagpole_pct_str = pattern_info['flagpole_gain'].replace('%', '')
+                flagpole_pct = float(flagpole_pct_str) / 100
+                
+                # Calculate flagpole height in dollars
+                flagpole_start_price = entry / (1 + flagpole_pct)  # Estimate start price
+                flagpole_height = entry - flagpole_start_price
+                
+                # Ensure minimum flagpole height
+                flagpole_height = max(flagpole_height, entry * 0.08)  # At least 8%
+                
+                target1 = entry + flagpole_height  # Full flagpole projection
+                target2 = entry + (flagpole_height * 1.382)  # Fibonacci extension
+            except (ValueError, KeyError):
+                # Fallback calculation
+                risk = entry - stop
+                target1 = entry + (risk * 2.5)
+                target2 = entry + (risk * 4.0)
         else:
-            # Fallback
-            target1 = entry + (entry - stop) * 2.0
-            target2 = entry + (entry - stop) * 3.0
+            # Fallback with good R/R
+            risk = entry - stop
+            target1 = entry + (risk * 2.5)
+            target2 = entry + (risk * 4.0)
         
         target_method = "Flagpole Height Projection"
         
     elif pattern_type == "Cup Handle":
-        # Entry at cup rim breakout
-        breakout_level = current_price * 1.01
+        # Improved cup handle entry calculation
         if 'cup_depth' in pattern_info:
-            # Try to estimate cup rim level from pattern info
-            cup_depth_pct = float(pattern_info['cup_depth'].replace('%', '')) / 100
-            estimated_rim = current_price / (1 - cup_depth_pct * 0.5)  # Rough estimate
-            entry = estimated_rim * 1.005
+            try:
+                # Extract cup depth percentage
+                cup_depth_str = pattern_info['cup_depth'].replace('%', '')
+                cup_depth_pct = float(cup_depth_str) / 100
+                
+                # Estimate cup rim level more accurately
+                # If current price dropped from rim, estimate rim level
+                estimated_rim = current_price / (1 - cup_depth_pct * 0.3)  # Conservative estimate
+                entry = estimated_rim * 1.005
+            except (ValueError, KeyError):
+                entry = current_price * 1.02  # Fallback
         else:
-            entry = breakout_level
+            entry = current_price * 1.02
         
-        # Stop below handle low
-        stop = data.tail(10)['Low'].min() * 0.97
+        # Improved stop for cup handles
+        handle_low = data.tail(15)['Low'].min()
+        volatility_stop = entry - volatility_stop_distance
+        traditional_stop = handle_low * 0.97
         
-        # MEASURED MOVE: Cup depth added to rim breakout
+        # Use higher stop for better R/R
+        stop = max(volatility_stop, traditional_stop)
+        
+        # Ensure proper stop distance
+        min_stop_distance = entry * 0.05  # At least 5% for cup handles
+        if stop >= entry:
+            stop = entry - min_stop_distance
+        elif (entry - stop) < min_stop_distance:
+            stop = entry - min_stop_distance
+        
+        # MEASURED MOVE: Improved cup depth projection
         if 'cup_depth' in pattern_info:
-            cup_depth_pct = float(pattern_info['cup_depth'].replace('%', '')) / 100
-            cup_depth_dollars = entry * cup_depth_pct  # Dollar depth of cup
-            
-            target1 = entry + cup_depth_dollars  # Full cup depth projection
-            target2 = entry + (cup_depth_dollars * 1.618)  # Golden ratio extension
+            try:
+                cup_depth_str = pattern_info['cup_depth'].replace('%', '')
+                cup_depth_pct = float(cup_depth_str) / 100
+                
+                # Cup depth in dollars
+                cup_depth_dollars = entry * cup_depth_pct
+                
+                # Ensure minimum measured move
+                cup_depth_dollars = max(cup_depth_dollars, entry * 0.10)  # At least 10%
+                
+                target1 = entry + cup_depth_dollars  # Full cup depth projection
+                target2 = entry + (cup_depth_dollars * 1.618)  # Golden ratio
+            except (ValueError, KeyError):
+                # Fallback
+                risk = entry - stop
+                target1 = entry + (risk * 2.0)
+                target2 = entry + (risk * 3.0)
         else:
-            # Fallback
-            target1 = entry + (entry - stop) * 2.0
-            target2 = entry + (entry - stop) * 3.0
+            # Fallback with good R/R
+            risk = entry - stop
+            target1 = entry + (risk * 2.0)
+            target2 = entry + (risk * 3.0)
         
         target_method = "Cup Depth Projection"
     
     else:
         # Fallback for any other patterns
         entry = current_price * 1.01
-        stop = data['Low'].tail(10).min() * 0.98
+        stop = current_price * 0.95  # 5% stop
         target1 = entry + (entry - stop) * 2.0
         target2 = entry + (entry - stop) * 3.0
         target_method = "Traditional 2:1 & 3:1"
     
-    # Calculate metrics
+    # Final safety checks to ensure good R/R ratios
     risk_amount = entry - stop
     reward1 = target1 - entry
     reward2 = target2 - entry
+    
+    # If R/R is too low, adjust targets upward
+    if risk_amount > 0:
+        rr1 = reward1 / risk_amount
+        rr2 = reward2 / risk_amount
+        
+        # Ensure minimum 1.5:1 R/R for target 1
+        if rr1 < 1.5:
+            target1 = entry + (risk_amount * 1.5)
+            reward1 = target1 - entry
+            rr1 = 1.5
+        
+        # Ensure minimum 2.5:1 R/R for target 2
+        if rr2 < 2.5:
+            target2 = entry + (risk_amount * 2.5)
+            reward2 = target2 - entry
+            rr2 = 2.5
+    else:
+        # Emergency fallback if risk calculation fails
+        risk_amount = entry * 0.05  # 5% risk
+        stop = entry - risk_amount
+        target1 = entry + (risk_amount * 2.0)
+        target2 = entry + (risk_amount * 3.0)
+        reward1 = target1 - entry
+        reward2 = target2 - entry
+        rr1 = 2.0
+        rr2 = 3.0
     
     return {
         'entry': entry,
@@ -468,8 +577,9 @@ def calculate_levels(data, pattern_info, pattern_type):
         'reward2': reward2,
         'rr_ratio1': reward1 / risk_amount if risk_amount > 0 else 0,
         'rr_ratio2': reward2 / risk_amount if risk_amount > 0 else 0,
-        'target_method': target_method,  # NEW: Show calculation method
-        'measured_move': True  # Flag to indicate this uses measured moves
+        'target_method': target_method,
+        'measured_move': True,
+        'volatility_adjusted': True  # New flag
     }
 
 def create_chart(data, ticker, pattern_type, pattern_info, levels):
@@ -675,7 +785,7 @@ def main():
                                 st.info(f"📐 **Method**: {levels['target_method']}")
                             
                             with col2:
-                                # Enhanced pattern-specific information
+                                # Enhanced pattern-specific information with R/R validation
                                 if info.get('initial_ascension'):
                                     st.write(f"🚀 Initial rise: {info['initial_ascension']}")
                                 if info.get('descending_highs'):
@@ -692,6 +802,10 @@ def main():
                                     st.write(f"🚀 Flagpole: {flagpole_pct}")
                                     st.success(f"📐 **Measured Move**: ${flagpole_dollars:.2f}")
                                     st.write("*Target = Entry + Flagpole Height*")
+                                    
+                                    # R/R validation warning
+                                    if levels['rr_ratio1'] < 1.5:
+                                        st.warning(f"⚠️ Low R/R: {levels['rr_ratio1']:.1f}:1 (adjusted to 1.5:1)")
                                 
                                 if info.get('healthy_pullback'):
                                     st.write(f"📉 Flag pullback: {info.get('flag_pullback', '')}")
@@ -705,6 +819,10 @@ def main():
                                     st.write(f"☕ Cup depth: {cup_pct}")
                                     st.success(f"📐 **Measured Move**: ${cup_dollars:.2f}")
                                     st.write("*Target = Rim + Cup Depth*")
+                                    
+                                    # R/R validation warning
+                                    if levels['rr_ratio1'] < 1.5:
+                                        st.warning(f"⚠️ Low R/R: {levels['rr_ratio1']:.1f}:1 (adjusted to 1.5:1)")
                                 
                                 if info.get('perfect_handle'):
                                     st.success(f"✨ Perfect handle: {info['perfect_handle']}")
@@ -712,17 +830,29 @@ def main():
                                     st.write(f"👍 Good handle: {info['good_handle']}")
                                 elif info.get('acceptable_handle'):
                                     st.write(f"✅ Acceptable handle: {info['acceptable_handle']}")
+                                elif info.get('deep_handle'):
+                                    st.warning(f"⚠️ Deep handle: {info['deep_handle']}")
                                 
                                 if info.get('short_handle'):
                                     st.write(f"⚡ Short handle: {info['short_handle']}")
                                 elif info.get('medium_handle'):
                                     st.write(f"⏰ Medium handle: {info['medium_handle']}")
+                                elif info.get('long_handle'):
+                                    st.warning(f"⚠️ Long handle: {info['long_handle']}")
                                 
                                 # Flat Top with triangle height explanation
                                 if pattern == "Flat Top Breakout" and levels.get('measured_move'):
                                     triangle_height = levels['reward1']
                                     st.success(f"📐 **Triangle Height**: ${triangle_height:.2f}")
                                     st.write("*Target = Breakout + Triangle Height*")
+                                    
+                                    # R/R validation warning
+                                    if levels['rr_ratio1'] < 1.5:
+                                        st.warning(f"⚠️ Low R/R: {levels['rr_ratio1']:.1f}:1 (adjusted to 1.5:1)")
+                                
+                                # Show if volatility-adjusted stops were used
+                                if levels.get('volatility_adjusted'):
+                                    st.info("📊 Volatility-adjusted stops")
                                 
                                 # Warnings and status
                                 if info.get('handle_too_long'):
