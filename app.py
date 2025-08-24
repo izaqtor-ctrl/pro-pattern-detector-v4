@@ -228,96 +228,112 @@ def detect_bull_flag(data, macd_line, signal_line, histogram):
     return confidence, pattern_info
 
 def detect_cup_handle(data, macd_line, signal_line, histogram):
-    """Detect cup handle with more realistic requirements"""
+    """Detect cup handle with much more lenient requirements"""
     confidence = 0
     pattern_info = {}
     
-    if len(data) < 40:
+    if len(data) < 30:  # Reduced from 40
         return confidence, pattern_info
     
-    # STEP 1: More flexible sizing for 6-month data
-    max_lookback = min(80, len(data) - 5)  # Increased from 60 to 80
+    # STEP 1: Much more flexible sizing
+    max_lookback = min(100, len(data) - 3)  # Increased from 80
     
-    # Handle can be longer - up to 20 days (was 10)
-    handle_days = min(20, max_lookback // 4)  # More realistic handle duration
+    # Handle can be much longer - up to 30 days
+    handle_days = min(30, max_lookback // 3)  # Even more flexible
     cup_days = max_lookback - handle_days
     
-    cup_data = data.iloc[-max_lookback:-handle_days]
-    handle_data = data.tail(handle_days)
+    cup_data = data.iloc[-max_lookback:-handle_days] if handle_days > 0 else data.iloc[-max_lookback:]
+    handle_data = data.tail(handle_days) if handle_days > 0 else data.tail(5)
     
-    if len(cup_data) < 25:  # Reduced from 20, but still need decent cup
+    if len(cup_data) < 15:  # Very minimal requirement
         return confidence, pattern_info
     
-    # STEP 2: Cup formation
+    # STEP 2: Very lenient cup formation
     cup_start = cup_data['Close'].iloc[0]
     cup_bottom = cup_data['Low'].min()
     cup_right = cup_data['Close'].iloc[-1]
     cup_depth = (max(cup_start, cup_right) - cup_bottom) / max(cup_start, cup_right)
     
-    if not (0.12 <= cup_depth <= 0.50 and cup_right >= cup_start * 0.85):  # More lenient
+    # Much more lenient cup requirements
+    if cup_depth < 0.08 or cup_depth > 0.60:  # Very wide range
         return confidence, pattern_info
     
-    confidence += 30
+    if cup_right < cup_start * 0.75:  # Very lenient rim requirement
+        return confidence, pattern_info
+    
+    confidence += 25  # Base points for having a cup
     pattern_info['cup_depth'] = f"{cup_depth*100:.1f}%"
     
-    # STEP 3: Handle validation - MORE REALISTIC
-    handle_low = handle_data['Low'].min()
-    current_price = data['Close'].iloc[-1]
-    handle_depth = (cup_right - handle_low) / cup_right
-    
-    # More lenient handle depth - up to 18% (was 12%)
-    if handle_depth > 0.18:  # Increased from 0.12
-        return 0, {'pattern_broken': True, 'break_reason': f'Handle too deep: {handle_depth*100:.1f}% (>18%)'}
-    
-    if handle_depth <= 0.08:  # Perfect handle
-        confidence += 25
-        pattern_info['perfect_handle'] = f"{handle_depth*100:.1f}%"
-    elif handle_depth <= 0.15:  # Good handle (expanded range)
-        confidence += 20
-        pattern_info['good_handle'] = f"{handle_depth*100:.1f}%"
-    else:  # Acceptable handle (15-18%)
-        confidence += 15
-        pattern_info['acceptable_handle'] = f"{handle_depth*100:.1f}%"
-    
-    # STEP 4: Handle duration - more lenient
-    if handle_days > 15:  # Increased from 8 to 15 days
-        return confidence * 0.7, {**pattern_info, 'handle_too_long': f"{handle_days} days"}
-    
-    if handle_days <= 8:  # Short handle bonus
+    # STEP 3: Very lenient handle validation
+    if handle_days > 0:
+        handle_low = handle_data['Low'].min()
+        current_price = data['Close'].iloc[-1]
+        handle_depth = (cup_right - handle_low) / cup_right
+        
+        # Much more lenient handle depth - up to 25%!
+        if handle_depth > 0.25:  # Increased from 0.18
+            confidence += 10  # Small penalty instead of rejection
+            pattern_info['deep_handle'] = f"{handle_depth*100:.1f}%"
+        elif handle_depth <= 0.08:  # Perfect handle
+            confidence += 20
+            pattern_info['perfect_handle'] = f"{handle_depth*100:.1f}%"
+        elif handle_depth <= 0.15:  # Good handle
+            confidence += 15
+            pattern_info['good_handle'] = f"{handle_depth*100:.1f}%"
+        else:  # Acceptable handle (15-25%)
+            confidence += 10
+            pattern_info['acceptable_handle'] = f"{handle_depth*100:.1f}%"
+        
+        # Handle duration - very lenient
+        if handle_days > 25:  # Much more lenient
+            confidence *= 0.8  # Small penalty instead of major one
+            pattern_info['long_handle'] = f"{handle_days} days"
+        elif handle_days <= 10:  # Short handle bonus
+            confidence += 10
+            pattern_info['short_handle'] = f"{handle_days} days"
+        elif handle_days <= 20:  # Medium handle
+            confidence += 5
+            pattern_info['medium_handle'] = f"{handle_days} days"
+        
+    else:
+        # No clear handle, but still might be forming
         confidence += 10
-        pattern_info['short_handle'] = f"{handle_days} days"
-    elif handle_days <= 12:  # Medium handle - still good
-        confidence += 5
-        pattern_info['medium_handle'] = f"{handle_days} days"
+        pattern_info['forming_handle'] = "Handle forming"
     
-    # STEP 5: Recency - more flexible
-    days_since_handle_low = next((i for i in range(1, handle_days + 5) 
-                                 if data['Low'].iloc[-i] == handle_low), handle_days + 5)
+    # STEP 4: Very lenient recency
+    current_price = data['Close'].iloc[-1]
     
-    if days_since_handle_low > handle_days + 3:  # More flexible
-        return confidence * 0.6, {**pattern_info, 'pattern_stale': True, 'handle_age': days_since_handle_low}
-    
-    # STEP 6: Pattern validation - more lenient
+    # STEP 5: Very lenient pattern validation
     breakout_level = max(cup_start, cup_right)
-    if current_price < breakout_level * 0.85:  # Increased from 0.90
-        return confidence * 0.8, {**pattern_info, 'pattern_stale': True, 'far_from_rim': True}
+    if current_price < breakout_level * 0.70:  # Very lenient
+        confidence *= 0.7
+        pattern_info['far_from_rim'] = True
+    else:
+        confidence += 5  # Bonus for being near rim
     
-    # STEP 7: Pattern broken checks
-    if current_price < handle_low * 0.95:  # Below handle support
-        return 0, {'pattern_broken': True, 'break_reason': 'Below handle support'}
+    # STEP 6: No strict breakage rules - just reduce confidence
+    if handle_days > 0:
+        handle_low = handle_data['Low'].min()
+        if current_price < handle_low * 0.90:  # Very lenient
+            confidence *= 0.8  # Reduce but don't eliminate
+            pattern_info['below_handle'] = True
     
-    # STEP 8: Technical confirmation
+    # STEP 7: Technical confirmation (bonus points)
     if macd_line.iloc[-1] > signal_line.iloc[-1]:
         confidence += 10
         pattern_info['macd_bullish'] = True
     
-    # Volume drying up in handle
-    if len(cup_data) > 20:
+    # Volume analysis (bonus points)
+    if len(cup_data) > 10 and handle_days > 0:
         cup_volume = cup_data['Volume'].mean()
         handle_volume = handle_data['Volume'].mean()
-        if handle_volume < cup_volume * 0.80:
-            confidence += 10
+        if handle_volume < cup_volume * 0.85:
+            confidence += 8
             pattern_info['volume_dryup'] = True
+    
+    # STEP 8: Minimum confidence check
+    if confidence < 35:  # Very low minimum
+        return confidence, pattern_info
     
     return confidence, pattern_info
 
